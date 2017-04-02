@@ -1,0 +1,11 @@
+<?xml version='1.0'?>
+<Actions>
+    <Action id='activityStart' deviceFilter='self' uiPath='DeviceActions'>
+        <Name>Activity Start</Name>
+        <CallbackMethod>activityStart</CallbackMethod>
+    </Action>
+    <Action id='activityStop' deviceFilter='self' uiPath='DeviceActions'>
+        <Name>Activity Stop</Name>
+        <CallbackMethod>activityStop</CallbackMethod>
+    </Action>
+</Actions>
