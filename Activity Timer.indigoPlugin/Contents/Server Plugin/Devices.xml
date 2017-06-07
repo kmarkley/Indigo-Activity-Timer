@@ -6,10 +6,6 @@
             <Field id='countThreshold' type='textfield' defaultValue='1'>
                 <Label>Count Threshold:</Label>
             </Field>
-            <Field id='extend' type='checkbox' defaultValue='true'>
-                <Label>Always Extend:</Label>
-                <Description>Extend ON state even when threshold not met.</Description>
-            </Field>
             <Field id='resetCycles' type='textfield' defaultValue='1'>
                 <Label>Reset Cycles:</Label>
             </Field>
@@ -33,6 +29,10 @@
                     <Option value='hours'>Hours</Option>
                     <Option value='days'>Days</Option>
                 </List>
+            </Field>
+            <Field id='extend' type='checkbox' defaultValue='true'>
+                <Label>Always Extend:</Label>
+                <Description>Extend ON state even when threshold not met.   </Description>
             </Field>
             <Field id='deviceSeparator' type='separator' />
             <Field id='device1' type='menu'>

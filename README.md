@@ -1,2 +1,1 @@
-# Name
-
+# Activity Timer

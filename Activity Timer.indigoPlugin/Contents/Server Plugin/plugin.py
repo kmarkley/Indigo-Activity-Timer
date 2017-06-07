@@ -39,13 +39,15 @@ k_variableKeys = (
     'variable5',
     )
 
+k_updateCheckHours = 24
+
 ################################################################################
 class Plugin(indigo.PluginBase):
     #-------------------------------------------------------------------------------
     def __init__(self, pluginId, pluginDisplayName, pluginVersion, pluginPrefs):
         indigo.PluginBase.__init__(self, pluginId, pluginDisplayName, pluginVersion, pluginPrefs)
         self.updater = GitHubPluginUpdater(self)
-    
+
     def __del__(self):
         indigo.PluginBase.__del__(self)
 
@@ -57,29 +59,31 @@ class Plugin(indigo.PluginBase):
         self.logger.debug("startup")
         if self.debug:
             self.logger.debug("Debug logging enabled")
-        
+        self.nextCheck      = self.pluginPrefs.get('nextUpdateCheck',0)
+
         self.showTimer      = self.pluginPrefs.get('showTimer',False)
         self.tickTime       = time.time()
         self.deviceDict     = dict()
-        
+
         indigo.devices.subscribeToChanges()
         indigo.variables.subscribeToChanges()
 
     #-------------------------------------------------------------------------------
     def shutdown(self):
         self.logger.debug("shutdown")
-        self.pluginPrefs["showDebugInfo"] = self.debug
+        self.pluginPrefs['showDebugInfo'] = self.debug
+        self.pluginPrefs['nextUpdateCheck'] = self.nextCheck
 
     #-------------------------------------------------------------------------------
     def validatePrefsConfigUi(self, valuesDict):
         self.logger.debug("validatePrefsConfigUi")
         errorsDict = indigo.Dict()
-                
+
         if len(errorsDict) > 0:
             self.logger.debug('validate prefs config error: \n{}'.format(errorsDict))
             return (False, valuesDict, errorsDict)
         return (True, valuesDict)
-    
+
     #-------------------------------------------------------------------------------
     def closedPrefsConfigUi(self, valuesDict, userCancelled):
         self.logger.debug("closedPrefsConfigUi")
@@ -96,10 +100,13 @@ class Plugin(indigo.PluginBase):
                 self.tickTime = time.time()
                 for id, activity in self.deviceDict.iteritems():
                     activity.tick()
+                if self.tickTime > self.nextCheck:
+                    self.checkForUpdates()
+                    self.nextCheck = self.tickTime + k_updateCheckHours*60*60
                 self.sleep(self.tickTime + 1 - time.time())
         except self.StopThread:
             pass    # Optionally catch the StopThread exception and do any needed cleanup.
-    
+
     #-------------------------------------------------------------------------------
     # Device Methods
     #-------------------------------------------------------------------------------
@@ -109,63 +116,63 @@ class Plugin(indigo.PluginBase):
             self.updateDeviceVersion(dev)
         if dev.configured:
             self.deviceDict[dev.id] = self.ActivityTimer(dev, self)
-    
+
     #-------------------------------------------------------------------------------
     def deviceStopComm(self, dev):
         self.logger.debug("deviceStopComm: "+dev.name)
         if dev.id in self.deviceDict:
             del self.deviceDict[dev.id]
-    
+
     #-------------------------------------------------------------------------------
     def validateDeviceConfigUi(self, valuesDict, typeId, devId, runtime=False):
         self.logger.debug("validateDeviceConfigUi: " + typeId)
         errorsDict = indigo.Dict()
-        
+
         for devKey, stateKey in k_deviceKeys:
             if zint(valuesDict.get(devKey,'')) and not valuesDict.get(stateKey,''):
                 errorsDict[stateKey] = "Required"
         for key in ['countThreshold','resetCycles','offCycles']:
             if not zint(valuesDict.get(key,'')) > 0:
                 errorsDict[key] = "Must be a positive integer"
-        
+
         if len(errorsDict) > 0:
             self.logger.debug('validate device config error: \n{}'.format(errorsDict))
             return (False, valuesDict, errorsDict)
         return (True, valuesDict)
-    
+
     #-------------------------------------------------------------------------------
     def updateDeviceVersion(self, dev):
         theProps = dev.pluginProps
         # update states
         dev.stateListOrDisplayStateIdChanged()
         # check for props
-        
+
         # push to server
         theProps["version"] = self.pluginVersion
         dev.replacePluginPropsOnServer(theProps)
-    
+
     #-------------------------------------------------------------------------------
     def deviceUpdated(self, oldDev, newDev):
-        
+
         # device belongs to plugin
         if newDev.pluginId == self.pluginId or oldDev.pluginId == self.pluginId:
             # update local copy (will be removed/overwritten if communication is stopped/re-started)
             if newDev.id in self.deviceDict:
                 self.deviceDict[newDev.id] = self.ActivityTimer(newDev, self)
             indigo.PluginBase.deviceUpdated(self, oldDev, newDev)
-        
+
         else:
             for id, activity in self.deviceDict.items():
                 activity.devChanged(oldDev, newDev)
-        
+
     #-------------------------------------------------------------------------------
     # Variable Methods
     #-------------------------------------------------------------------------------
     def variableUpdated(self, oldVar, newVar):
         for id, activity in self.deviceDict.items():
             activity.varChanged(oldVar, newVar)
-    
-        
+
+
     #-------------------------------------------------------------------------------
     # Action Methods
     #-------------------------------------------------------------------------------
@@ -174,14 +181,14 @@ class Plugin(indigo.PluginBase):
             self.deviceDict[action.deviceId].start()
         else:
             self.logger.error('device id "%s" not available' % action.deviceId)
-    
+
     #-------------------------------------------------------------------------------
     def activityStop(self, action):
         if action.deviceId in self.deviceDict:
             self.deviceDict[action.deviceId].stop()
         else:
             self.logger.error('device id "%s" not available' % action.deviceId)
-    
+
     #-------------------------------------------------------------------------------
     # Menu Methods
     #-------------------------------------------------------------------------------
@@ -204,7 +211,7 @@ class Plugin(indigo.PluginBase):
         else:
             self.debug = True
             self.logger.debug("Debug logging enabled")
-        
+
     #-------------------------------------------------------------------------------
     # Callbacks
     #-------------------------------------------------------------------------------
@@ -216,7 +223,7 @@ class Plugin(indigo.PluginBase):
                 devList.append((dev.id, dev.name))
         devList.append((0,"- none -"))
         return devList
-        
+
     #-------------------------------------------------------------------------------
     def getStateList(self, filter=None, valuesDict=dict(), typeId='', targetId=0):
         stateList = list()
@@ -225,7 +232,7 @@ class Plugin(indigo.PluginBase):
             for state in indigo.devices[devId].states:
                 stateList.append((state,state))
         return stateList
-    
+
     #-------------------------------------------------------------------------------
     def getVariableList(self, filter='', valuesDict=dict(), typeId='', targetId=0):
         varList = list()
@@ -233,43 +240,43 @@ class Plugin(indigo.PluginBase):
             varList.append((var.id, var.name))
         varList.append((0,"- none -"))
         return varList
-        
+
     #-------------------------------------------------------------------------------
     def loadStates(self, valuesDict=None, typeId='', targetId=0):
         pass
-        
+
     ################################################################################
     # Classes
     ################################################################################
     class ActivityTimer(object):
-        
+
         #-------------------------------------------------------------------------------
         def __init__(self, instance, plugin):
             self.dev        = instance
             self.id         = instance.id
             self.name       = instance.name
             self.states     = instance.states
-            
+
             self.plugin     = plugin
             self.logger     = plugin.logger
-            
+
             self.threshold  = int(instance.pluginProps.get('countThreshold',1))
             self.extend     = instance.pluginProps.get('extend',True)
             self.anyChange  = instance.pluginProps.get('anyChange',False)
             self.reverse    = instance.pluginProps.get('reverseBoolean',False)
             self.resetDelta = self.delta(instance.pluginProps.get('resetCycles',1), instance.pluginProps.get('resetUnits','minutes'))
             self.offDelta   = self.delta(instance.pluginProps.get('offCycles', 10), instance.pluginProps.get('offUnits',  'minutes'))
-            
+
             self.deviceStateDict = dict()
             for deviceKey, stateKey in k_deviceKeys:
                 if zint(instance.pluginProps.get(deviceKey,'')):
                     self.deviceStateDict[int(instance.pluginProps[deviceKey])] = instance.pluginProps[stateKey]
-            
+
             self.variableList = list()
             for variableKey in k_variableKeys:
                 if zint(instance.pluginProps.get(variableKey,'')):
                     self.variableList.append(int(instance.pluginProps[variableKey]))
-            
+
         #-------------------------------------------------------------------------------
         def tick(self):
             reset = expired = False
@@ -280,7 +287,7 @@ class Plugin(indigo.PluginBase):
                 self.states['onOffState'] = False
                 self.states['expired'] = True
             self.save()
-        
+
         #-------------------------------------------------------------------------------
         def tock(self):
             detected = False
@@ -292,13 +299,13 @@ class Plugin(indigo.PluginBase):
             elif self.states['onOffState'] and self.extend:
                 self.states['offTime'] = self.plugin.tickTime + self.offDelta
             self.save()
-        
+
         #-------------------------------------------------------------------------------
         def start(self):
             self.states['onOffState'] = True
             self.states['offTime'] = self.plugin.tickTime + self.offDelta
             self.save()
-        
+
         #-------------------------------------------------------------------------------
         def stop(self):
             if self.states['count']:
@@ -308,7 +315,7 @@ class Plugin(indigo.PluginBase):
                 self.states['onOffState'] = False
                 self.states['offTime'] = self.plugin.tickTime
             self.save()
-        
+
         #-------------------------------------------------------------------------------
         def save(self):
             if self.plugin.showTimer or (self.states != self.dev.states):
@@ -322,13 +329,13 @@ class Plugin(indigo.PluginBase):
                         self.states['state'] = 'accrue'
                     else:
                         self.states['state'] = 'idle'
-                
+
                 self.states['resetString']   = datetime.fromtimestamp(self.states['resetTime']).strftime('%Y-%m-%d %T')
                 self.states['offString']     = datetime.fromtimestamp(self.states['offTime']  ).strftime('%Y-%m-%d %T')
                 self.states['counting']      = bool(self.states['count'])
                 if self.states['onOffState']:  self.states['expired'] = False
                 if self.states['counting']:    self.states['reset']   = False
-                
+
                 if self.plugin.showTimer:
                     if self.states['state'] in ['active','persist']:
                         self.states['displayState'] = self.countdown(self.states['offTime']   - self.plugin.tickTime)
@@ -336,7 +343,7 @@ class Plugin(indigo.PluginBase):
                         self.states['displayState'] = self.countdown(self.states['resetTime'] - self.plugin.tickTime)
                 else:
                     self.states['displayState'] = self.states['state']
-                
+
                 newStates = list()
                 for key, value in self.states.iteritems():
                     if self.states[key] != self.dev.states[key]:
@@ -345,7 +352,7 @@ class Plugin(indigo.PluginBase):
                             self.logger.info('"{0}" {1}'.format(self.name, ['off','on'][value]))
                         elif key == 'state':
                             self.dev.updateStateImageOnServer(k_stateImages[value])
-                            
+
                 if len(newStates) > 0:
                     if self.plugin.debug: # don't fill up plugin log unless actively debugging
                         self.logger.debug('updating states on device "{0}":'.format(self.name))
@@ -353,7 +360,7 @@ class Plugin(indigo.PluginBase):
                             self.logger.debug('{:>16}: {}'.format(item['key'],item['value']))
                     self.dev.updateStatesOnServer(newStates)
                 self.states = self.dev.states
-            
+
         #-------------------------------------------------------------------------------
         def devChanged(self, oldDev, newDev):
             if newDev.id in self.deviceStateDict:
@@ -361,14 +368,14 @@ class Plugin(indigo.PluginBase):
                 if oldDev.states[stateKey] != newDev.states[stateKey]:
                     if self.testChange(newDev.states[stateKey]):
                         self.tock()
-        
+
         #-------------------------------------------------------------------------------
         def varChanged(self, oldVar, newVar):
             if newVar.id in self.variableList:
                 if oldVar.value != newVar.value:
                     if self.testChange(newVar.value):
                         self.tock()
-        
+
         #-------------------------------------------------------------------------------
         def testChange(self, value):
             if self.anyChange:
@@ -379,12 +386,10 @@ class Plugin(indigo.PluginBase):
                     result = True
                 elif isinstance(value, basestring):
                     result = value.lower() in k_commonTrueStates
-                else:
-                    return False
                 if self.reverse:
                     result = not result
             return result
-        
+
         #-------------------------------------------------------------------------------
         def delta(self, cycles, units):
             multiplier = 1
@@ -395,13 +400,13 @@ class Plugin(indigo.PluginBase):
             elif units == 'days':
                 multiplier = 60*60*24
             return int(cycles)*multiplier
-        
+
         #-------------------------------------------------------------------------------
         def countdown(self, value):
             hours, remainder = divmod(zint(value), 3600)
             minutes, seconds = divmod(remainder, 60)
             return '{}:{:0>2d}:{:0>2d}'.format(hours, minutes, seconds)
-    
+
 ################################################################################
 # Utilities
 ################################################################################
