@@ -194,4 +194,132 @@
         </States>
         <UiDisplayStateId>displayState</UiDisplayStateId>
     </Device>
+    <Device type='custom' id='persistenceTimer'>
+        <Name>Persistence Timer</Name>
+        <ConfigUI>
+            <Field id='onCycles' type='textfield' defaultValue='1'>
+                <Label>ON Wait Cycles:</Label>
+            </Field>
+            <Field id='onUnits' type='menu' defaultValue='minutes'>
+                <Label>ON Wait Units:</Label>
+                <List>
+                    <Option value='seconds'>Seconds</Option>
+                    <Option value='minutes'>Minutes</Option>
+                    <Option value='hours'>Hours</Option>
+                    <Option value='days'>Days</Option>
+                </List>
+            </Field>
+            <Field id='offCycles' type='textfield' defaultValue='1'>
+                <Label>OFF Wait Cycles:</Label>
+            </Field>
+            <Field id='offUnits' type='menu' defaultValue='minutes'>
+                <Label>OFF Wait Units:</Label>
+                <List>
+                    <Option value='seconds'>Seconds</Option>
+                    <Option value='minutes'>Minutes</Option>
+                    <Option value='hours'>Hours</Option>
+                    <Option value='days'>Days</Option>
+                </List>
+            </Field>
+            <Field id='separator' type='separator' />
+            <Field id='trackEntity' type='menu' defaultValue='dev'>
+                <Label>Track:</Label>
+                <List>
+                    <Option value='dev'>Device</Option>
+                    <Option value='var'>Variable</Option>
+                </List>
+            </Field>
+            <Field id='device1' type='menu' visibleBindingId='trackEntity'  visibleBindingValue='dev' alwaysUseInDialogHeightCalc='true'>
+                <Label>Device 1:</Label>
+                <List class='self' method='getDeviceList'/>
+            </Field>
+            <Field id='loadStates' type='button' visibleBindingId='trackEntity'  visibleBindingValue='dev' alwaysUseInDialogHeightCalc='true'>
+                <Label></Label>
+                <Title>Load States</Title>
+                <CallbackMethod>loadStates</CallbackMethod>
+            </Field>
+            <Field id='state1' type='menu' visibleBindingId='trackEntity'  visibleBindingValue='dev' alwaysUseInDialogHeightCalc='true'>
+                <Label>State 1:</Label>
+                <List class='self' filter='device1' method='getStateList' dynamicReload='true'/>
+            </Field>
+            <Field id='variable1' type='menu' visibleBindingId='trackEntity'  visibleBindingValue='var' alwaysUseInDialogHeightCalc='false'>
+                <Label>Variable 1:</Label>
+                <List class='self' method='getVariableList'/>
+            </Field>
+            <Field id='logicSeparator' type='separator' />
+            <Field id='boolLabel0' type='label'>
+                <Label>This device goes ON if:</Label>
+            </Field>
+            <Field id='boolLabel1' type='label'>
+                <Label>             • Strings match: 'true', 'on', 'open', 'up', 'yes', 'active', 'unlocked', '1'</Label>
+            </Field>
+            <Field id='boolLabel2' type='label'>
+                <Label>             • Numbers match if non-zero</Label>
+            </Field>
+            <Field id='boolLabel3' type='label'>
+                <Label>             • Booleans match if True</Label>
+            </Field>
+            <Field id='reverseBoolean' type='checkbox' defaultValue='false'>
+                <Label>Reverse Logic?:</Label>
+                <Description>Check to reverse above logic.</Description>
+            </Field>
+        </ConfigUI>
+        <States>
+            <State id='onOffState'>
+                <ValueType>Boolean</ValueType>
+                <TriggerLabel>On/Off State is On</TriggerLabel>
+                <TriggerLabelPrefix>On/Off State is</TriggerLabelPrefix>
+                <ControlPageLabel>On/Off State</ControlPageLabel>
+                <ControlPageLabelPrefix>On/Off State is</ControlPageLabelPrefix>
+            </State>
+            <State id='state'>
+                <ValueType>
+                    <List>
+                        <Option value='on'>On</Option>
+                        <Option value='off'>Off</Option>
+                        <Option value='pending'>Pending</Option>
+                    </List>
+                </ValueType>
+                <TriggerLabel>Any State Change</TriggerLabel>
+                <TriggerLabelPrefix>State is</TriggerLabelPrefix>
+                <ControlPageLabel>State</ControlPageLabel>
+                <ControlPageLabelPrefix>State is</ControlPageLabelPrefix>
+            </State>
+            <State id='displayState'>
+                <ValueType>String</ValueType>
+                <TriggerLabel>Display State Change</TriggerLabel>
+                <TriggerLabelPrefix>Display State is</TriggerLabelPrefix>
+                <ControlPageLabel>Display State</ControlPageLabel>
+                <ControlPageLabelPrefix>Display State is</ControlPageLabelPrefix>
+            </State>
+            <State id='pending'>
+                <ValueType>Boolean</ValueType>
+                <TriggerLabel>Pending is</TriggerLabel>
+                <TriggerLabelPrefix>Pending is</TriggerLabelPrefix>
+                <ControlPageLabel>Pending</ControlPageLabel>
+                <ControlPageLabelPrefix>Pending is</ControlPageLabelPrefix>
+            </State>
+            <State id='onTime'>
+                <ValueType>Number</ValueType>
+                <TriggerLabel>Reset Time</TriggerLabel>
+                <ControlPageLabel>Reset Time</ControlPageLabel>
+            </State>
+            <State id='onString'>
+                <ValueType>String</ValueType>
+                <TriggerLabel>Reset String</TriggerLabel>
+                <ControlPageLabel>Reset String</ControlPageLabel>
+            </State>
+            <State id='offTime'>
+                <ValueType>Number</ValueType>
+                <TriggerLabel>Reset Time</TriggerLabel>
+                <ControlPageLabel>Reset Time</ControlPageLabel>
+            </State>
+            <State id='offString'>
+                <ValueType>String</ValueType>
+                <TriggerLabel>Reset String</TriggerLabel>
+                <ControlPageLabel>Reset String</ControlPageLabel>
+            </State>
+        </States>
+        <UiDisplayStateId>displayState</UiDisplayStateId>
+    </Device>
 </Devices>

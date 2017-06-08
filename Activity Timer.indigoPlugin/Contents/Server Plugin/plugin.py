@@ -17,10 +17,10 @@ from ghpu import GitHubPluginUpdater
 k_commonTrueStates = ['true', 'on', 'open', 'up', 'yes', 'active', 'unlocked', '1']
 
 k_stateImages = {
-    'idle':     indigo.kStateImageSel.SensorOff,
-    'accrue':   indigo.kStateImageSel.TimerOff,
-    'active':   indigo.kStateImageSel.SensorOn,
-    'persist':  indigo.kStateImageSel.TimerOn,
+    'SensorOff':    indigo.kStateImageSel.SensorOff,
+    'TimerOff':     indigo.kStateImageSel.TimerOff,
+    'SensorOn':     indigo.kStateImageSel.SensorOn,
+    'TimerOn':      indigo.kStateImageSel.TimerOn,
     }
 
 k_deviceKeys = (
@@ -115,7 +115,10 @@ class Plugin(indigo.PluginBase):
         if dev.version != self.pluginVersion:
             self.updateDeviceVersion(dev)
         if dev.configured:
-            self.deviceDict[dev.id] = self.ActivityTimer(dev, self)
+            if dev.deviceTypeId == 'activityTimer':
+                self.deviceDict[dev.id] = ActivityTimer(dev, self)
+            elif dev.deviceTypeId == 'persistenceTimer':
+                self.deviceDict[dev.id] = PersistenceTimer(dev, self)
 
     #-------------------------------------------------------------------------------
     def deviceStopComm(self, dev):
@@ -128,10 +131,23 @@ class Plugin(indigo.PluginBase):
         self.logger.debug("validateDeviceConfigUi: " + typeId)
         errorsDict = indigo.Dict()
 
-        for devKey, stateKey in k_deviceKeys:
-            if zint(valuesDict.get(devKey,'')) and not valuesDict.get(stateKey,''):
-                errorsDict[stateKey] = "Required"
-        for key in ['countThreshold','resetCycles','offCycles']:
+        if typeId == 'activityTimer':
+            for devKey, stateKey in k_deviceKeys:
+                if zint(valuesDict.get(devKey,'')) and not valuesDict.get(stateKey,''):
+                    errorsDict[stateKey] = "Required"
+            requiredIntegers = ['resetCycles','countThreshold','offCycles']
+
+        elif typeId == 'persistenceTimer':
+            requiredIntegers = ['onCycles','offCycles']
+            if valuesDict.get('trackEntity','dev') == 'dev':
+                keys = k_deviceKeys[0]
+            else:
+                keys = [k_variableKeys[0]]
+            for key in keys:
+                if not valuesDict.get(key,''):
+                    errorsDict[key] = "Required"
+
+        for key in requiredIntegers:
             if not zint(valuesDict.get(key,'')) > 0:
                 errorsDict[key] = "Must be a positive integer"
 
@@ -156,9 +172,6 @@ class Plugin(indigo.PluginBase):
 
         # device belongs to plugin
         if newDev.pluginId == self.pluginId or oldDev.pluginId == self.pluginId:
-            # update local copy (will be removed/overwritten if communication is stopped/re-started)
-            if newDev.id in self.deviceDict:
-                self.deviceDict[newDev.id] = self.ActivityTimer(newDev, self)
             indigo.PluginBase.deviceUpdated(self, oldDev, newDev)
 
         else:
@@ -245,51 +258,146 @@ class Plugin(indigo.PluginBase):
     def loadStates(self, valuesDict=None, typeId='', targetId=0):
         pass
 
-    ################################################################################
-    # Classes
-    ################################################################################
-    class ActivityTimer(object):
+################################################################################
+# Classes
+################################################################################
+class BaseTimer(object):
 
-        #-------------------------------------------------------------------------------
-        def __init__(self, instance, plugin):
-            self.dev        = instance
-            self.id         = instance.id
-            self.name       = instance.name
-            self.states     = instance.states
+    #-------------------------------------------------------------------------------
+    def __init__(self, instance, plugin):
+        self.dev        = instance
+        self.id         = instance.id
+        self.name       = instance.name
+        self.states     = instance.states
 
-            self.plugin     = plugin
-            self.logger     = plugin.logger
+        self.plugin     = plugin
+        self.logger     = plugin.logger
 
-            self.threshold  = int(instance.pluginProps.get('countThreshold',1))
-            self.extend     = instance.pluginProps.get('extend',True)
-            self.anyChange  = instance.pluginProps.get('anyChange',False)
-            self.reverse    = instance.pluginProps.get('reverseBoolean',False)
-            self.resetDelta = self.delta(instance.pluginProps.get('resetCycles',1), instance.pluginProps.get('resetUnits','minutes'))
-            self.offDelta   = self.delta(instance.pluginProps.get('offCycles', 10), instance.pluginProps.get('offUnits',  'minutes'))
+        self.reverse    = instance.pluginProps.get('reverseBoolean',False)
+        self.stateImg   = None
 
-            self.deviceStateDict = dict()
-            for deviceKey, stateKey in k_deviceKeys:
-                if zint(instance.pluginProps.get(deviceKey,'')):
-                    self.deviceStateDict[int(instance.pluginProps[deviceKey])] = instance.pluginProps[stateKey]
+        self.deviceStateDict = dict()
+        for deviceKey, stateKey in k_deviceKeys:
+            if zint(instance.pluginProps.get(deviceKey,'')):
+                self.deviceStateDict[int(instance.pluginProps[deviceKey])] = instance.pluginProps[stateKey]
 
-            self.variableList = list()
-            for variableKey in k_variableKeys:
-                if zint(instance.pluginProps.get(variableKey,'')):
-                    self.variableList.append(int(instance.pluginProps[variableKey]))
+        self.variableList = list()
+        for variableKey in k_variableKeys:
+            if zint(instance.pluginProps.get(variableKey,'')):
+                self.variableList.append(int(instance.pluginProps[variableKey]))
 
-        #-------------------------------------------------------------------------------
-        def tick(self):
-            reset = expired = False
-            if self.states['count'] and (self.plugin.tickTime >= self.states['resetTime']):
-                self.states['count'] = 0
-                self.states['reset'] = True
-            if self.states['onOffState'] and (self.plugin.tickTime >= self.states['offTime']):
-                self.states['onOffState'] = False
-                self.states['expired'] = True
-            self.save()
+    #-------------------------------------------------------------------------------
+    def saveStates(self):
+        newStates = list()
+        for key, value in self.states.iteritems():
+            if self.states[key] != self.dev.states[key]:
+                newStates.append({'key':key,'value':value})
+                if key == 'onOffState':
+                    self.logger.info('"{0}" {1}'.format(self.name, ['off','on'][value]))
+                elif key == 'state':
+                    self.dev.updateStateImageOnServer(k_stateImages[self.stateImg])
 
-        #-------------------------------------------------------------------------------
-        def tock(self):
+        if len(newStates) > 0:
+            if self.plugin.debug: # don't fill up plugin log unless actively debugging
+                self.logger.debug('updating states on device "{0}":'.format(self.name))
+                for item in newStates:
+                    self.logger.debug('{:>16}: {}'.format(item['key'],item['value']))
+            self.dev.updateStatesOnServer(newStates)
+        self.states = self.dev.states
+
+    #-------------------------------------------------------------------------------
+    def devChanged(self, oldDev, newDev):
+        if newDev.id in self.deviceStateDict:
+            stateKey = self.deviceStateDict[newDev.id]
+            if oldDev.states[stateKey] != newDev.states[stateKey]:
+                self.tock(newDev.states[stateKey])
+
+    #-------------------------------------------------------------------------------
+    def varChanged(self, oldVar, newVar):
+        if newVar.id in self.variableList:
+            if oldVar.value != newVar.value:
+                self.tock(newVar.value)
+
+    #-------------------------------------------------------------------------------
+    def getChangeBool(self, value):
+        if self.anyChange:
+            result = True
+        else:
+            result = False
+            if zint(value):
+                result = True
+            elif isinstance(value, basestring):
+                result = value.lower() in k_commonTrueStates
+            if self.reverse:
+                result = not result
+        return result
+
+    #-------------------------------------------------------------------------------
+    def delta(self, cycles, units):
+        multiplier = 1
+        if units == 'minutes':
+            multiplier = 60
+        elif units == 'hours':
+            multiplier = 60*60
+        elif units == 'days':
+            multiplier = 60*60*24
+        return int(cycles)*multiplier
+
+    #-------------------------------------------------------------------------------
+    def countdown(self, value):
+        hours, remainder = divmod(zint(value), 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return '{}:{:0>2d}:{:0>2d}'.format(hours, minutes, seconds)
+
+    #-------------------------------------------------------------------------------
+    # abstract methods
+    #-------------------------------------------------------------------------------
+    def tick(self):
+        raise NotImplementedError
+
+    #-------------------------------------------------------------------------------
+    def tock(self, newVal):
+        raise NotImplementedError
+
+    #-------------------------------------------------------------------------------
+    def start(self):
+        raise NotImplementedError
+
+    #-------------------------------------------------------------------------------
+    def stop(self):
+        raise NotImplementedError
+
+    #-------------------------------------------------------------------------------
+    def update(self):
+        raise NotImplementedError
+
+################################################################################
+class ActivityTimer(BaseTimer):
+
+    #-------------------------------------------------------------------------------
+    def __init__(self, instance, plugin):
+        super(ActivityTimer, self).__init__(instance, plugin)
+
+        self.threshold  = int(instance.pluginProps.get('countThreshold',1))
+        self.extend     = instance.pluginProps.get('extend',True)
+        self.anyChange  = instance.pluginProps.get('anyChange',False)
+        self.resetDelta = self.delta(instance.pluginProps.get('resetCycles',1), instance.pluginProps.get('resetUnits','minutes'))
+        self.offDelta   = self.delta(instance.pluginProps.get('offCycles', 10), instance.pluginProps.get('offUnits',  'minutes'))
+
+    #-------------------------------------------------------------------------------
+    def tick(self):
+        reset = expired = False
+        if self.states['count'] and (self.plugin.tickTime >= self.states['resetTime']):
+            self.states['count'] = 0
+            self.states['reset'] = True
+        if self.states['onOffState'] and (self.plugin.tickTime >= self.states['offTime']):
+            self.states['onOffState'] = False
+            self.states['expired'] = True
+        self.update()
+
+    #-------------------------------------------------------------------------------
+    def tock(self, newVal):
+        if self.getChangeBool(newVal):
             detected = False
             self.states['count'] += 1
             self.states['resetTime'] = self.plugin.tickTime + self.resetDelta
@@ -298,114 +406,141 @@ class Plugin(indigo.PluginBase):
                 self.states['offTime'] = self.plugin.tickTime + self.offDelta
             elif self.states['onOffState'] and self.extend:
                 self.states['offTime'] = self.plugin.tickTime + self.offDelta
-            self.save()
+            self.update()
 
-        #-------------------------------------------------------------------------------
-        def start(self):
-            self.states['onOffState'] = True
-            self.states['offTime'] = self.plugin.tickTime + self.offDelta
-            self.save()
+    #-------------------------------------------------------------------------------
+    def start(self):
+        self.states['onOffState'] = True
+        self.states['offTime'] = self.plugin.tickTime + self.offDelta
+        self.update()
 
-        #-------------------------------------------------------------------------------
-        def stop(self):
-            if self.states['count']:
-                self.states['count'] = 0
-                self.states['resetTime'] = self.plugin.tickTime
+    #-------------------------------------------------------------------------------
+    def stop(self):
+        if self.states['count']:
+            self.states['count'] = 0
+            self.states['resetTime'] = self.plugin.tickTime
+        if self.states['onOffState']:
+            self.states['onOffState'] = False
+            self.states['offTime'] = self.plugin.tickTime
+        self.update()
+
+    #-------------------------------------------------------------------------------
+    def update(self):
+        if self.plugin.showTimer or (self.states != self.dev.states):
             if self.states['onOffState']:
-                self.states['onOffState'] = False
-                self.states['offTime'] = self.plugin.tickTime
-            self.save()
-
-        #-------------------------------------------------------------------------------
-        def save(self):
-            if self.plugin.showTimer or (self.states != self.dev.states):
-                if self.states['onOffState']:
-                    if (self.states['count'] >= self.threshold) or (self.states['count'] and self.extend):
-                        self.states['state'] = 'active'
-                    else:
-                        self.states['state'] = 'persist'
+                if (self.states['count'] >= self.threshold) or (self.states['count'] and self.extend):
+                    self.states['state'] = 'active'
+                    self.stateImg = 'TimerOn'
                 else:
-                    if self.states['count']:
-                        self.states['state'] = 'accrue'
-                    else:
-                        self.states['state'] = 'idle'
-
-                self.states['resetString']   = datetime.fromtimestamp(self.states['resetTime']).strftime('%Y-%m-%d %T')
-                self.states['offString']     = datetime.fromtimestamp(self.states['offTime']  ).strftime('%Y-%m-%d %T')
-                self.states['counting']      = bool(self.states['count'])
-                if self.states['onOffState']:  self.states['expired'] = False
-                if self.states['counting']:    self.states['reset']   = False
-
-                if self.plugin.showTimer:
-                    if self.states['state'] in ['active','persist']:
-                        self.states['displayState'] = self.countdown(self.states['offTime']   - self.plugin.tickTime)
-                    elif self.states['state'] == 'accrue':
-                        self.states['displayState'] = self.countdown(self.states['resetTime'] - self.plugin.tickTime)
-                else:
-                    self.states['displayState'] = self.states['state']
-
-                newStates = list()
-                for key, value in self.states.iteritems():
-                    if self.states[key] != self.dev.states[key]:
-                        newStates.append({'key':key,'value':value})
-                        if key == 'onOffState':
-                            self.logger.info('"{0}" {1}'.format(self.name, ['off','on'][value]))
-                        elif key == 'state':
-                            self.dev.updateStateImageOnServer(k_stateImages[value])
-
-                if len(newStates) > 0:
-                    if self.plugin.debug: # don't fill up plugin log unless actively debugging
-                        self.logger.debug('updating states on device "{0}":'.format(self.name))
-                        for item in newStates:
-                            self.logger.debug('{:>16}: {}'.format(item['key'],item['value']))
-                    self.dev.updateStatesOnServer(newStates)
-                self.states = self.dev.states
-
-        #-------------------------------------------------------------------------------
-        def devChanged(self, oldDev, newDev):
-            if newDev.id in self.deviceStateDict:
-                stateKey = self.deviceStateDict[newDev.id]
-                if oldDev.states[stateKey] != newDev.states[stateKey]:
-                    if self.testChange(newDev.states[stateKey]):
-                        self.tock()
-
-        #-------------------------------------------------------------------------------
-        def varChanged(self, oldVar, newVar):
-            if newVar.id in self.variableList:
-                if oldVar.value != newVar.value:
-                    if self.testChange(newVar.value):
-                        self.tock()
-
-        #-------------------------------------------------------------------------------
-        def testChange(self, value):
-            if self.anyChange:
-                result = True
+                    self.states['state'] = 'persist'
+                    self.stateImg = 'SensorOn'
             else:
-                result = False
-                if zint(value):
-                    result = True
-                elif isinstance(value, basestring):
-                    result = value.lower() in k_commonTrueStates
-                if self.reverse:
-                    result = not result
-            return result
+                if self.states['count']:
+                    self.states['state'] = 'accrue'
+                    self.stateImg = 'TimerOff'
+                else:
+                    self.states['state'] = 'idle'
+                    self.stateImg = 'SensorOff'
 
-        #-------------------------------------------------------------------------------
-        def delta(self, cycles, units):
-            multiplier = 1
-            if units == 'minutes':
-                multiplier = 60
-            elif units == 'hours':
-                multiplier = 60*60
-            elif units == 'days':
-                multiplier = 60*60*24
-            return int(cycles)*multiplier
+            self.states['resetString']   = datetime.fromtimestamp(self.states['resetTime']).strftime('%Y-%m-%d %T')
+            self.states['offString']     = datetime.fromtimestamp(self.states['offTime']  ).strftime('%Y-%m-%d %T')
+            self.states['counting']      = bool(self.states['count'])
+            if self.states['onOffState']:  self.states['expired'] = False
+            if self.states['counting']:    self.states['reset']   = False
 
-        #-------------------------------------------------------------------------------
-        def countdown(self, value):
-            hours, remainder = divmod(zint(value), 3600)
-            minutes, seconds = divmod(remainder, 60)
-            return '{}:{:0>2d}:{:0>2d}'.format(hours, minutes, seconds)
+            if self.plugin.showTimer:
+                if self.states['state'] in ['active','persist']:
+                    self.states['displayState'] = self.countdown(self.states['offTime']   - self.plugin.tickTime)
+                elif self.states['state'] == 'accrue':
+                    self.states['displayState'] = self.countdown(self.states['resetTime'] - self.plugin.tickTime)
+            else:
+                self.states['displayState'] = self.states['state']
+
+            self.saveStates()
+
+################################################################################
+class PersistenceTimer(BaseTimer):
+
+    #-------------------------------------------------------------------------------
+    def __init__(self, instance, plugin):
+        super(PersistenceTimer, self).__init__(instance, plugin)
+
+        self.anyChange = False
+        self.onDelta  = self.delta(instance.pluginProps.get('onCycles',1), instance.pluginProps.get('onUnits','minutes'))
+        self.offDelta = self.delta(instance.pluginProps.get('offCycles',1), instance.pluginProps.get('offUnits','minutes'))
+
+        # initial state
+        self.state['pending'] = False
+        if instance.pluginProps['trackEntity'] == 'dev':
+            devId, state = self.deviceStateDict.items()[0]
+            self.state['onOffState'] = self.getChangeBool(indigo.devices[devId].states[state])
+        else:
+            self.stste['onOffState'] = self.getChangeBool(indigo.variables[self.variableList[0]].value)
+        self.update()
+
+    #-------------------------------------------------------------------------------
+    def tick(self):
+        if self.states['pending']:
+            if self.states['onOffState'] and self.plugin.tickTime >= self.states['offTime']:
+                self.states['onOffState'] = False
+                self.states['pending'] = False
+            elif not self.states['onOffState'] and self.plugin.tickTime >= self.states['onTime']:
+                self.states['onOffState'] = True
+                self.states['pending'] = False
+            self.update()
+
+    #-------------------------------------------------------------------------------
+    def tock(self, newVal):
+        if self.getChangeBool(newVal) == self.states['onOffState']:
+            self.states['pending'] = False
+        else:
+            if self.states['onOffState']:
+                self.states['offTime'] = self.plugin.tickTime + self.offDelta
+            else:
+                self.states['onTime'] = self.plugin.tickTime + self.onDelta
+            self.states['pending'] = True
+        self.update()
+
+    #-------------------------------------------------------------------------------
+    def start(self):
+        pass
+
+    #-------------------------------------------------------------------------------
+    def stop(self):
+        pass
+
+    #-------------------------------------------------------------------------------
+    def update(self):
+        if self.plugin.showTimer or (self.states != self.dev.states):
+
+            if self.states['onOffState']:
+                if self.states['pending']:
+                    self.states['state'] = 'pending'
+                    self.stateImg = 'TimerOn'
+                else:
+                    self.states['state'] = 'on'
+                    self.stateImg = 'SensorOn'
+            else:
+                if self.states['pending']:
+                    self.states['state'] = 'pending'
+                    self.stateImg = 'TimerOff'
+                else:
+                    self.states['state'] = 'off'
+                    self.stateImg = 'SensorOff'
+
+            self.states['onString']   = datetime.fromtimestamp(self.states['onTime']).strftime('%Y-%m-%d %T')
+            self.states['offString']  = datetime.fromtimestamp(self.states['offTime']).strftime('%Y-%m-%d %T')
+
+            if self.plugin.showTimer and self.states['pending']:
+                if self.states['onOffState']:
+                    self.states['displayState'] = self.countdown(self.states['offTime'] - self.plugin.tickTime)
+                else:
+                    self.states['displayState'] = self.countdown(self.states['onTime'] - self.plugin.tickTime)
+            else:
+                self.states['displayState'] = self.states['state']
+
+            self.saveStates()
+
 
 ################################################################################
 # Utilities
