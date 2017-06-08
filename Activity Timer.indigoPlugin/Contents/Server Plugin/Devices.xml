@@ -197,10 +197,10 @@
     <Device type='custom' id='persistenceTimer'>
         <Name>Persistence Timer</Name>
         <ConfigUI>
-            <Field id='onCycles' type='textfield' defaultValue='1'>
+            <Field id='onCycles' type='textfield' defaultValue='30'>
                 <Label>ON Wait Cycles:</Label>
             </Field>
-            <Field id='onUnits' type='menu' defaultValue='minutes'>
+            <Field id='onUnits' type='menu' defaultValue='seconds'>
                 <Label>ON Wait Units:</Label>
                 <List>
                     <Option value='seconds'>Seconds</Option>
@@ -209,10 +209,10 @@
                     <Option value='days'>Days</Option>
                 </List>
             </Field>
-            <Field id='offCycles' type='textfield' defaultValue='1'>
+            <Field id='offCycles' type='textfield' defaultValue='30'>
                 <Label>OFF Wait Cycles:</Label>
             </Field>
-            <Field id='offUnits' type='menu' defaultValue='minutes'>
+            <Field id='offUnits' type='menu' defaultValue='seconds'>
                 <Label>OFF Wait Units:</Label>
                 <List>
                     <Option value='seconds'>Seconds</Option>

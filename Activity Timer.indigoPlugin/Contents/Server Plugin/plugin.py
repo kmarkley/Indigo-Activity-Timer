@@ -4,6 +4,8 @@
 # http://www.indigodomo.com
 
 import indigo
+import threading
+import Queue
 import time
 from datetime import datetime
 from ghpu import GitHubPluginUpdater
@@ -46,7 +48,8 @@ class Plugin(indigo.PluginBase):
     #-------------------------------------------------------------------------------
     def __init__(self, pluginId, pluginDisplayName, pluginVersion, pluginPrefs):
         indigo.PluginBase.__init__(self, pluginId, pluginDisplayName, pluginVersion, pluginPrefs)
-        self.updater = GitHubPluginUpdater(self)
+        self.updater    = GitHubPluginUpdater(self)
+        self.deviceDict = dict()
 
     def __del__(self):
         indigo.PluginBase.__del__(self)
@@ -63,7 +66,6 @@ class Plugin(indigo.PluginBase):
 
         self.showTimer      = self.pluginPrefs.get('showTimer',False)
         self.tickTime       = time.time()
-        self.deviceDict     = dict()
 
         indigo.devices.subscribeToChanges()
         indigo.variables.subscribeToChanges()
@@ -99,7 +101,7 @@ class Plugin(indigo.PluginBase):
             while True:
                 self.tickTime = time.time()
                 for id, activity in self.deviceDict.iteritems():
-                    activity.tick()
+                    activity.queue.put(('tick',None,None))
                 if self.tickTime > self.nextCheck:
                     self.checkForUpdates()
                     self.nextCheck = self.tickTime + k_updateCheckHours*60*60
@@ -119,11 +121,15 @@ class Plugin(indigo.PluginBase):
                 self.deviceDict[dev.id] = ActivityTimer(dev, self)
             elif dev.deviceTypeId == 'persistenceTimer':
                 self.deviceDict[dev.id] = PersistenceTimer(dev, self)
+            # start the thread
+            self.deviceDict[dev.id].start()
+            self.logger.debug(str(self.deviceDict[dev.id].isAlive))
 
     #-------------------------------------------------------------------------------
     def deviceStopComm(self, dev):
         self.logger.debug("deviceStopComm: "+dev.name)
         if dev.id in self.deviceDict:
+            self.deviceDict[dev.id].cancel()
             del self.deviceDict[dev.id]
 
     #-------------------------------------------------------------------------------
@@ -176,14 +182,14 @@ class Plugin(indigo.PluginBase):
 
         else:
             for id, activity in self.deviceDict.items():
-                activity.devChanged(oldDev, newDev)
+                activity.queue.put(('devChanged', oldDev, newDev))
 
     #-------------------------------------------------------------------------------
     # Variable Methods
     #-------------------------------------------------------------------------------
     def variableUpdated(self, oldVar, newVar):
         for id, activity in self.deviceDict.items():
-            activity.varChanged(oldVar, newVar)
+            activity.queue.put(('varChanged', oldVar, newVar))
 
 
     #-------------------------------------------------------------------------------
@@ -191,14 +197,14 @@ class Plugin(indigo.PluginBase):
     #-------------------------------------------------------------------------------
     def activityStart(self, action):
         if action.deviceId in self.deviceDict:
-            self.deviceDict[action.deviceId].start()
+            self.deviceDict[action.deviceId].turnOn()
         else:
             self.logger.error('device id "%s" not available' % action.deviceId)
 
     #-------------------------------------------------------------------------------
     def activityStop(self, action):
         if action.deviceId in self.deviceDict:
-            self.deviceDict[action.deviceId].stop()
+            self.deviceDict[action.deviceId].turnOff()
         else:
             self.logger.error('device id "%s" not available' % action.deviceId)
 
@@ -261,10 +267,15 @@ class Plugin(indigo.PluginBase):
 ################################################################################
 # Classes
 ################################################################################
-class BaseTimer(object):
+class TimerBase(threading.Thread):
 
     #-------------------------------------------------------------------------------
     def __init__(self, instance, plugin):
+        super(TimerBase, self).__init__()
+        self.daemon     = True
+        self.cancelled  = False
+        self.queue      = Queue.Queue()
+
         self.dev        = instance
         self.id         = instance.id
         self.name       = instance.name
@@ -287,6 +298,44 @@ class BaseTimer(object):
                 self.variableList.append(int(instance.pluginProps[variableKey]))
 
     #-------------------------------------------------------------------------------
+    def run(self):
+        self.logger.debug('Thread started: {}'.format(self.name))
+        while not self.cancelled:
+            try:
+                task,oldArg,newArg = self.queue.get(True,5)
+                if task == 'tick':
+                    self.tick()
+                elif task == 'devChanged':
+                    self.devChanged(oldArg,newArg)
+                elif task == 'varChanged':
+                    self.varChanged(oldArg,newArg)
+                self.queue.task_done()
+            except Queue.Empty:
+                pass
+            except Exception as e:
+                self.logger.error('"{}" thread error:'.format(self.name))
+                self.logger.error(e)
+
+    #-------------------------------------------------------------------------------
+    def cancel(self):
+        """End this thread"""
+        self.logger.debug('Thread cancelled: {}'.format(self.name))
+        self.cancelled = True
+
+    #-------------------------------------------------------------------------------
+    def devChanged(self, oldDev, newDev):
+        if newDev.id in self.deviceStateDict:
+            stateKey = self.deviceStateDict[newDev.id]
+            if oldDev.states[stateKey] != newDev.states[stateKey]:
+                self.tock(newDev.states[stateKey])
+
+    #-------------------------------------------------------------------------------
+    def varChanged(self, oldVar, newVar):
+        if newVar.id in self.variableList:
+            if oldVar.value != newVar.value:
+                self.tock(newVar.value)
+
+    #-------------------------------------------------------------------------------
     def saveStates(self):
         newStates = list()
         for key, value in self.states.iteritems():
@@ -304,19 +353,6 @@ class BaseTimer(object):
                     self.logger.debug('{:>16}: {}'.format(item['key'],item['value']))
             self.dev.updateStatesOnServer(newStates)
         self.states = self.dev.states
-
-    #-------------------------------------------------------------------------------
-    def devChanged(self, oldDev, newDev):
-        if newDev.id in self.deviceStateDict:
-            stateKey = self.deviceStateDict[newDev.id]
-            if oldDev.states[stateKey] != newDev.states[stateKey]:
-                self.tock(newDev.states[stateKey])
-
-    #-------------------------------------------------------------------------------
-    def varChanged(self, oldVar, newVar):
-        if newVar.id in self.variableList:
-            if oldVar.value != newVar.value:
-                self.tock(newVar.value)
 
     #-------------------------------------------------------------------------------
     def getChangeBool(self, value):
@@ -360,19 +396,19 @@ class BaseTimer(object):
         raise NotImplementedError
 
     #-------------------------------------------------------------------------------
-    def start(self):
+    def turnOn(self):
         raise NotImplementedError
 
     #-------------------------------------------------------------------------------
-    def stop(self):
+    def turnOff(self):
         raise NotImplementedError
 
     #-------------------------------------------------------------------------------
-    def update(self):
+    def updateStates(self):
         raise NotImplementedError
 
 ################################################################################
-class ActivityTimer(BaseTimer):
+class ActivityTimer(TimerBase):
 
     #-------------------------------------------------------------------------------
     def __init__(self, instance, plugin):
@@ -393,7 +429,7 @@ class ActivityTimer(BaseTimer):
         if self.states['onOffState'] and (self.plugin.tickTime >= self.states['offTime']):
             self.states['onOffState'] = False
             self.states['expired'] = True
-        self.update()
+        self.updateStates()
 
     #-------------------------------------------------------------------------------
     def tock(self, newVal):
@@ -406,26 +442,26 @@ class ActivityTimer(BaseTimer):
                 self.states['offTime'] = self.plugin.tickTime + self.offDelta
             elif self.states['onOffState'] and self.extend:
                 self.states['offTime'] = self.plugin.tickTime + self.offDelta
-            self.update()
+            self.updateStates()
 
     #-------------------------------------------------------------------------------
-    def start(self):
+    def turnOn(self):
         self.states['onOffState'] = True
         self.states['offTime'] = self.plugin.tickTime + self.offDelta
-        self.update()
+        self.updateStates()
 
     #-------------------------------------------------------------------------------
-    def stop(self):
+    def turnOff(self):
         if self.states['count']:
             self.states['count'] = 0
             self.states['resetTime'] = self.plugin.tickTime
         if self.states['onOffState']:
             self.states['onOffState'] = False
             self.states['offTime'] = self.plugin.tickTime
-        self.update()
+        self.updateStates()
 
     #-------------------------------------------------------------------------------
-    def update(self):
+    def updateStates(self):
         if self.plugin.showTimer or (self.states != self.dev.states):
             if self.states['onOffState']:
                 if (self.states['count'] >= self.threshold) or (self.states['count'] and self.extend):
@@ -459,24 +495,24 @@ class ActivityTimer(BaseTimer):
             self.saveStates()
 
 ################################################################################
-class PersistenceTimer(BaseTimer):
+class PersistenceTimer(TimerBase):
 
     #-------------------------------------------------------------------------------
     def __init__(self, instance, plugin):
         super(PersistenceTimer, self).__init__(instance, plugin)
 
         self.anyChange = False
-        self.onDelta  = self.delta(instance.pluginProps.get('onCycles',1), instance.pluginProps.get('onUnits','minutes'))
-        self.offDelta = self.delta(instance.pluginProps.get('offCycles',1), instance.pluginProps.get('offUnits','minutes'))
+        self.onDelta  = self.delta(instance.pluginProps.get('onCycles',30), instance.pluginProps.get('onUnits','seconds'))
+        self.offDelta = self.delta(instance.pluginProps.get('offCycles',30), instance.pluginProps.get('offUnits','seconds'))
 
         # initial state
-        self.state['pending'] = False
+        self.states['pending'] = False
         if instance.pluginProps['trackEntity'] == 'dev':
             devId, state = self.deviceStateDict.items()[0]
-            self.state['onOffState'] = self.getChangeBool(indigo.devices[devId].states[state])
+            self.states['onOffState'] = self.getChangeBool(indigo.devices[devId].states[state])
         else:
             self.stste['onOffState'] = self.getChangeBool(indigo.variables[self.variableList[0]].value)
-        self.update()
+        self.updateStates()
 
     #-------------------------------------------------------------------------------
     def tick(self):
@@ -487,7 +523,7 @@ class PersistenceTimer(BaseTimer):
             elif not self.states['onOffState'] and self.plugin.tickTime >= self.states['onTime']:
                 self.states['onOffState'] = True
                 self.states['pending'] = False
-            self.update()
+            self.updateStates()
 
     #-------------------------------------------------------------------------------
     def tock(self, newVal):
@@ -499,18 +535,18 @@ class PersistenceTimer(BaseTimer):
             else:
                 self.states['onTime'] = self.plugin.tickTime + self.onDelta
             self.states['pending'] = True
-        self.update()
+        self.updateStates()
 
     #-------------------------------------------------------------------------------
-    def start(self):
+    def turnOn(self):
         pass
 
     #-------------------------------------------------------------------------------
-    def stop(self):
+    def turnOff(self):
         pass
 
     #-------------------------------------------------------------------------------
-    def update(self):
+    def updateStates(self):
         if self.plugin.showTimer or (self.states != self.dev.states):
 
             if self.states['onOffState']:
